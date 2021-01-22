@@ -99,22 +99,20 @@ extern void __pgd_error(const char *file, int line, unsigned long val);
 #define PAGE_S2			__pgprot(PROT_DEFAULT | PTE_S2_MEMATTR(MT_S2_NORMAL) | PTE_S2_RDONLY)
 #define PAGE_S2_DEVICE		__pgprot(PROT_DEFAULT | PTE_S2_MEMATTR(MT_S2_DEVICE_nGnRE) | PTE_S2_RDONLY | PTE_UXN)
 
-#define PAGE_NONE		__pgprot(((_PAGE_DEFAULT) & ~PTE_VALID) | PTE_PROT_NONE | PTE_NG | PTE_PXN | PTE_UXN)
+#define PAGE_NONE		__pgprot(((_PAGE_DEFAULT) & ~PTE_VALID) | PTE_PROT_NONE | PTE_RDONLY | PTE_NG | PTE_PXN | PTE_UXN)
 #define PAGE_SHARED		__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_NG | PTE_PXN | PTE_UXN | PTE_WRITE)
 #define PAGE_SHARED_EXEC	__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_NG | PTE_PXN | PTE_WRITE)
-#define PAGE_COPY		__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_NG | PTE_PXN | PTE_UXN)
-#define PAGE_COPY_EXEC		__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_NG | PTE_PXN)
-#define PAGE_READONLY		__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_NG | PTE_PXN | PTE_UXN)
-#define PAGE_READONLY_EXEC	__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_NG | PTE_PXN)
+#define PAGE_READONLY		__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_RDONLY | PTE_NG | PTE_PXN | PTE_UXN)
+#define PAGE_READONLY_EXEC	__pgprot(_PAGE_DEFAULT | PTE_USER | PTE_RDONLY | PTE_NG | PTE_PXN)
 
 #define __P000  PAGE_NONE
 #define __P001  PAGE_READONLY
-#define __P010  PAGE_COPY
-#define __P011  PAGE_COPY
+#define __P010  PAGE_READONLY
+#define __P011  PAGE_READONLY
 #define __P100  PAGE_READONLY_EXEC
 #define __P101  PAGE_READONLY_EXEC
-#define __P110  PAGE_COPY_EXEC
-#define __P111  PAGE_COPY_EXEC
+#define __P110  PAGE_READONLY_EXEC
+#define __P111  PAGE_READONLY_EXEC
 
 #define __S000  PAGE_NONE
 #define __S001  PAGE_READONLY
@@ -189,12 +187,16 @@ static inline pte_t set_pte_bit(pte_t pte, pgprot_t prot)
 
 static inline pte_t pte_wrprotect(pte_t pte)
 {
-	return clear_pte_bit(pte, __pgprot(PTE_WRITE));
+	pte = clear_pte_bit(pte, __pgprot(PTE_WRITE));
+	pte = set_pte_bit(pte, __pgprot(PTE_RDONLY));
+	return pte;
 }
 
 static inline pte_t pte_mkwrite(pte_t pte)
 {
-	return set_pte_bit(pte, __pgprot(PTE_WRITE));
+	pte = set_pte_bit(pte, __pgprot(PTE_WRITE));
+	pte = clear_pte_bit(pte, __pgprot(PTE_RDONLY));
+	return pte;
 }
 
 static inline pte_t pte_mkclean(pte_t pte)
@@ -231,16 +233,6 @@ static inline pte_t pte_mkcont(pte_t pte)
 static inline pte_t pte_mknoncont(pte_t pte)
 {
 	return clear_pte_bit(pte, __pgprot(PTE_CONT));
-}
-
-static inline pte_t pte_clear_rdonly(pte_t pte)
-{
-	return clear_pte_bit(pte, __pgprot(PTE_RDONLY));
-}
-
-static inline pte_t pte_set_rdonly(pte_t pte)
-{
-	return set_pte_bit(pte, __pgprot(PTE_RDONLY));
 }
 
 static inline pte_t pte_mkpresent(pte_t pte)
@@ -318,14 +310,8 @@ extern void __sync_icache_dcache(pte_t pteval, unsigned long addr);
 static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
 			      pte_t *ptep, pte_t pte)
 {
-	if (pte_present(pte)) {
-		if (pte_sw_dirty(pte) && pte_write(pte))
-			pte_val(pte) &= ~PTE_RDONLY;
-		else
-			pte_val(pte) |= PTE_RDONLY;
-		if (pte_user(pte) && pte_exec(pte) && !pte_special(pte))
-			__sync_icache_dcache(pte, addr);
-	}
+	if (pte_present(pte) && pte_user(pte) && pte_exec(pte) && !pte_special(pte))
+		__sync_icache_dcache(pte, addr);
 
 	/*
 	 * If the existing pte is valid, check for potential race with
@@ -740,12 +726,10 @@ static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addres
 		old_pte = pte;
 		/*
 		 * If hardware-dirty (PTE_WRITE/DBM bit set and PTE_RDONLY
-		 * clear), set the PTE_DIRTY and PTE_RDONLY bits.
+		 * clear), set the PTE_DIRTY bit.
 		 */
-		if (pte_hw_dirty(pte)) {
+		if (pte_hw_dirty(pte))
 			pte = pte_mkdirty(pte);
-			pte = pte_set_rdonly(pte);
-		}
 		pte = pte_wrprotect(pte);
 		pte_val(pte) = cmpxchg_relaxed(&pte_val(*ptep),
 					       pte_val(old_pte), pte_val(pte));
